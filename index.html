@@ -1,0 +1,382 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AI Math Solver</title>
+  <link rel="manifest" href="./manifest.json" />
+  <style>
+    :root{
+      --bg:#F6F7FB; --card:#FFFFFF; --text:#0F172A; --muted:#64748B;
+      --primary:#3B82F6; --border:#E5E7EB; --success:#10B981; --danger:#EF4444;
+      --radius:12px;
+    }
+    @media (prefers-color-scheme: dark){
+      :root{
+        --bg:#0F1115; --card:#151923; --text:#E7EAF2; --muted:#A9B1C3;
+        --border:#232A3A;
+      }
+    }
+    *{box-sizing:border-box}
+    body{margin:0;background:var(--bg);color:var(--text);font-family:system-ui, "Cairo", -apple-system, Segoe UI, Roboto}
+    .wrap{max-width:960px;margin-inline:auto;padding:16px}
+    h1{margin:8px 0 16px;font-size:22px}
+    .grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+    @media (max-width: 900px){ .grid{grid-template-columns:1fr} }
+    .card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:16px;box-shadow:0 6px 24px rgba(0,0,0,.06)}
+    label{display:block;font-weight:600;margin-bottom:8px}
+    textarea,input[type="text"]{
+      width:100%;padding:12px;border-radius:10px;border:1px solid var(--border);
+      background:transparent;color:inherit;font-size:16px;outline:none
+    }
+    .row{display:flex;gap:12px;flex-wrap:wrap}
+    button{
+      appearance:none;border:1px solid transparent;border-radius:12px;padding:12px 16px;
+      cursor:pointer;font-weight:600
+    }
+    .btn{background:var(--primary);color:#fff}
+    .btn-outline{background:transparent;border-color:var(--border);color:var(--text)}
+    .steps{display:grid;gap:10px}
+    .step{background:rgba(0,0,0,.03);border:1px solid var(--border);border-radius:10px;padding:10px}
+    .badge{display:inline-block;background:rgba(16,185,129,.12);color:var(--success);padding:2px 8px;border-radius:999px;font-size:12px}
+    /* مخطط متجاوب */
+  #plot{
+  width:100%;
+  /* خلّيه مربّع على الشاشات الواسعة */
+  aspect-ratio: 1 / 1;
+  height:auto;
+  border:1px solid var(--border);
+  border-radius:12px;
+  background:var(--card);
+  overflow:hidden;
+}
+@media (max-width: 768px){
+  /* على الجوال خلّيه 60% من ارتفاع الشاشة */
+  #plot{ aspect-ratio:auto; height:60vh; }
+}
+
+    /* منع “الزحلقة” باللمس داخل الرسم على الجوال */
+    #plot, #plot *{ touch-action: none; }
+  </style>
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+</head>
+<body>
+  <div class="wrap">
+    <h1>AI Math Solver</h1>
+
+    <div class="grid">
+      <!-- إدخال -->
+      <section class="card">
+        <label for="eq">أدخل المعادلة:</label>
+        <input id="eq" type="text" placeholder="مثال: y=2*x+3 أو x^2-5x+6=0" />
+        <div class="row" style="margin-top:10px">
+          <button id="solve" class="btn">✨ حل + رسم</button>
+          <button id="clear" class="btn-outline">🗑 مسح</button>
+          <span id="status" class="badge" style="display:none"></span>
+        </div>
+
+        <div class="card" style="margin-top:12px">
+          <div class="steps" id="steps">
+            <!-- يتم ملؤها -->
+          </div>
+        </div>
+      </section>
+
+      <!-- الرسم -->
+      <section class="card">
+        <div id="plot"></div>
+      </section>
+    </div>
+  </div>
+
+  <script>
+    /* ===== إعدادات عامة للرسم ===== */
+    const isMobile = window.matchMedia('(max-width: 768px)').matches;
+    const PLOT_CONFIG = {
+      responsive: true,
+      staticPlot: isMobile,       // على الجوال: يمنع السحب/الزوم
+      displayModeBar: false,
+      doubleClick: false,
+      scrollZoom: false
+    };
+    const plotEl = document.getElementById('plot');
+    window.addEventListener('resize', ()=> Plotly.Plots.resize(plotEl));
+    window.addEventListener('orientationchange', ()=> setTimeout(()=> Plotly.Plots.resize(plotEl), 150));
+
+    /* أدوات مساعدة */
+    const stepsEl = document.getElementById('steps');
+    const statusEl = document.getElementById('status');
+    function setStatus(txt, ok=true){
+      statusEl.textContent = txt;
+      statusEl.style.display = 'inline-block';
+      statusEl.style.background = ok ? 'rgba(16,185,129,.12)' : 'rgba(239,68,68,.12)';
+      statusEl.style.color = ok ? '#10B981' : '#EF4444';
+    }
+    function clearStatus(){ statusEl.style.display='none'; }
+
+    function renderSteps(list){
+      stepsEl.innerHTML = '';
+      (list && list.length ? list : ['— لا توجد خطوات —']).forEach(s=>{
+        const d = document.createElement('div');
+        d.className = 'step';
+        d.textContent = s;
+        stepsEl.appendChild(d);
+      });
+    }
+
+    /* ===== المنطق البسيط: كشف النوع وحل أساسي ===== */
+    function detectType(expr){
+      const s = expr.replace(/\s+/g,'');
+      if (/{|;|,/.test(s) && /=/.test(s)) return 'system';
+      if (/\^2|x\*\*2/.test(s) && /=0/.test(s)) return 'quadratic';
+      if (/^y=/.test(s) || (/x/.test(s) && /=/.test(s) && /y/.test(s))) return 'line';
+      return 'unknown';
+    }
+
+    /* تحويلات آمنة لـ eval */
+    function safeEvalY(rhs, x){
+      // نستبدل x بـ (قيمة) بأقواس لتفادي كسر التعبير
+      const js = rhs.replace(/\^/g, '**').replace(/x/g, `(${x})`);
+      return Function(`"use strict";return (${js});`)();
+    }
+
+    /* ===== الرسم واللَيّاوت ===== */
+    function baseLayout(){
+  return {
+    autosize: true,
+    // نخلي كل خانة = 1 وحدة على X و Y
+    xaxis: {
+      range: [-10, 10],
+      dtick: 1,                 // خط كل 1
+      tick0: 0,
+      showgrid: true,
+      gridcolor: '#CBD5E1',
+      minor: { showgrid: true, dtick: 1 }, // تأكيد خطوط ثانوية أيضًا
+      linecolor:'#94A3B8', mirror:true, ticks:'outside', showline:true,
+      scaleanchor: 'y',         // نفس المقياس على المحورين
+      scaleratio: 1
+    },
+    yaxis: {
+      range: [-10, 10],
+      dtick: 1,                 // خط كل 1
+      tick0: 0,
+      showgrid: true,
+      gridcolor: '#CBD5E1',
+      minor: { showgrid: true, dtick: 1 },
+      linecolor:'#94A3B8', mirror:true, ticks:'outside', showline:true
+    },
+    margin: { l: 40, r: 20, t: 30, b: 40 },
+    showlegend: true,
+    legend: { orientation: 'h', x: 0, y: 1.1 }
+  };
+}
+
+    function plotWelcome(){
+      Plotly.newPlot(plotEl, [], baseLayout(), PLOT_CONFIG);
+    }
+
+    function plotLine(rhs){
+      // نقاط للرسم
+      const X = [];
+      for (let i=-10;i<=10;i+=0.1) X.push(+i.toFixed(1));
+      const Y = X.map(x=> safeEvalY(rhs,x));
+
+      const trace = { x:X, y:Y, type:'scatter', mode:'lines', name:`y=${rhs}`, line:{width:3} };
+
+      // التقاطعات
+      const y0 = safeEvalY(rhs, 0);
+      // تقريب جذر تقاطع x بالبحث البسيط
+      let x0 = null;
+      for (let i=1;i<X.length;i++){
+        if (Y[i]===0){ x0=X[i]; break; }
+        if (Y[i-1]===0){ x0=X[i-1]; break; }
+        if ((Y[i-1] < 0 && Y[i] > 0) || (Y[i-1] > 0 && Y[i] < 0)){
+          // خطّي -> تقريب نقطة العبور
+          const t = Math.abs(Y[i-1])/(Math.abs(Y[i-1])+Math.abs(Y[i]));
+          x0 = X[i-1] + t*(X[i]-X[i-1]);
+          break;
+        }
+      }
+
+      const pts = [];
+      if (x0!=null) pts.push({x:[x0],y:[0], mode:'markers', type:'scatter', name:`A(${x0.toFixed(2)}, 0)`, marker:{size:10,color:'red'}});
+      pts.push({x:[0],y:[y0], mode:'markers', type:'scatter', name:`B(0, ${y0.toFixed(2)})`, marker:{size:10,color:'green'}});
+
+      const layout = baseLayout();
+      Plotly.newPlot(plotEl, [trace, ...pts], layout, PLOT_CONFIG);
+    }
+
+    function plotQuadratic(poly){
+      // نفس خط: نرسم f(x)=poly
+      plotLine(poly); // يكفينا نفس الدالة، لأننا ما نقصر على الدرجة
+    }
+
+    function plotSystem(e1, e2){
+      // نرسم كل معادلة بتحويل y=... إلى دالة
+      // لو جت ضمنيًا (مثال: 2x - y + 3 = 0) نحولها إلى y=...
+      function toRHS(eq){
+        const s = eq.replace(/\s+/g,'');
+        if (s.startsWith('y=')) return s.slice(2);
+        if (s.includes('=')){
+          const [L,R] = s.split('=');
+          // نحاول نخلي كل شيء يسار: L-R=0 ثم نحل لـ y
+          // هنا تبسيط سريع: ننقل R لليسار ونحذف =0 لو موجود
+          const SR = (L+'-('+R+')').replace(/=0$/,'');
+          // صيغة: ax + by + c => y = (-(ax+c))/b
+          // محاولة استخراج معاملات y بشكل بدائي
+          const by = SR.match(/([+\-]?\d*\.?\d*)y/);
+          if (!by) return null;
+          const b = by[1]=== '' || by[1]=== '+' ? 1 : (by[1]==='-' ? -1 : parseFloat(by[1]));
+          // نعوض y=0 لاستخراج الباقي مع x
+          // نكتب SR على شكل: b*y + rest => y = -rest/b
+          const rest = SR.replace(/([+\-]?\d*\.?\d*)y/,'0'); // نحذف حد y
+          return `(-(${rest}))/(${b})`;
+        }
+        return null;
+      }
+
+      const rhs1 = toRHS(e1);
+      const rhs2 = toRHS(e2);
+
+      const X = [];
+      for (let i=-10;i<=10;i+=0.1) X.push(+i.toFixed(1));
+      const traces = [];
+
+      if (rhs1){
+        const Y1 = X.map(x=> safeEvalY(rhs1,x));
+        traces.push({x:X,y:Y1,type:'scatter',mode:'lines',name:e1,line:{width:3}});
+      }
+      if (rhs2){
+        const Y2 = X.map(x=> safeEvalY(rhs2,x));
+        traces.push({x:X,y:Y2,type:'scatter',mode:'lines',name:e2,line:{width:3}});
+      }
+
+      Plotly.newPlot(plotEl, traces, baseLayout(), PLOT_CONFIG);
+    }
+
+    /* ===== حل مبسّط فقط للعرض (خطوات نصّية) ===== */
+    function solveSimple(expr){
+      const s = expr.replace(/\s+/g,'');
+      const t = detectType(s);
+      const steps = [];
+      let draw = null;
+
+      if (t === 'line'){
+        // y=mx+b أو 2x - y + 3 = 0
+        if (s.startsWith('y=')){
+          const rhs = s.split('=')[1];
+          // تقدير m,b
+          steps.push('الصيغة:  y = m x + b');
+          // محاولات بسيطة لاستخراج m,b (تقريبية)
+          try{
+            const m = (safeEvalY(rhs,1)-safeEvalY(rhs,0));
+            const b = safeEvalY(rhs,0);
+            steps.push(`الميل (m) = ${m.toFixed(2)}`);
+            steps.push(`تقاطع y (b) = ${b.toFixed(2)}`);
+          }catch{}
+          // تقاطع x
+          try{
+            const y0 = safeEvalY(rhs,0);
+            let x0 = null, X=[-10,-5,-2,-1,0,1,2,5,10];
+            for (let i=1;i<X.length;i++){
+              const f1 = safeEvalY(rhs,X[i-1]), f2 = safeEvalY(rhs,X[i]);
+              if ((f1<=0 && f2>=0) || (f1>=0 && f2<=0)){
+                const t = Math.abs(f1)/(Math.abs(f1)+Math.abs(f2));
+                x0 = X[i-1] + t*(X[i]-X[i-1]); break;
+              }
+            }
+            if (x0!=null) steps.push(`تقاطع المحور x:  x = ${x0.toFixed(2)}`);
+          }catch{}
+          draw = {kind:'line', rhs};
+        }else{
+          // صيغة عامة => نحاول إعادة ترتيبها إلى y=...
+          // مثال: 2x - y + 3 = 0  =>  y = 2x + 3
+          const [L,R] = s.split('=');
+          const SR = (L+'-('+R+')').replace(/=0$/,''); // =0 للصيغة القياسية
+          // y = - (SR بدون y) / معامل y
+          const by = SR.match(/([+\-]?\d*\.?\d*)y/);
+          if (by){
+            const b = by[1]=== '' || by[1]=== '+' ? 1 : (by[1]==='-' ? -1 : parseFloat(by[1]));
+            const rest = SR.replace(/([+\-]?\d*\.?\d*)y/,'0');
+            const rhs = `(-(${rest}))/(${b})`;
+            steps.push('الصيغة:  y = m x + b');
+            draw = {kind:'line', rhs};
+          }else{
+            steps.push('ما قدرت أحولها لــ y=... تلقائيًا.');
+          }
+        }
+      }
+      else if (t === 'quadratic'){
+        // x^2 - 5x + 6 = 0 => نرسم y = x^2 - 5x + 6
+        const [L,R] = s.split('=');
+        const poly = `${L}-(${R})`.replace(/=0$/,'');
+        steps.push('تحويل للصيغة القياسية:  f(x) = 0');
+        steps.push('نرسم f(x) ونُظهر الجذور كنقاط تقاطع مع x.');
+        draw = {kind:'quad', poly};
+      }
+      else if (t === 'system'){
+        // { y=2x+3 ; y=-x+1 }
+        const parts = s.replace(/[{}]/g,'').split(/;|,/).map(v=>v.trim()).filter(Boolean);
+        if (parts.length>=2){
+          steps.push('نرسم المعادلتين ونبيّن نقطة التقاطع.');
+          draw = {kind:'sys', e1:parts[0], e2:parts[1]};
+        }else{
+          steps.push('الصيغة ناقصة لمعادتين.');
+        }
+      }
+      else{
+        // لو كانت y= دالة عامة نرسمها كـ function
+        if (s.startsWith('y=')){
+          const rhs = s.split('=')[1];
+          steps.push('تم تفسيرها كدالة عامة y=f(x).');
+          draw = {kind:'quad', poly:rhs};
+        }else{
+          steps.push('ما فهمت نوع المسألة. جرّب أمثلة: y=2*x+3 أو x^2-5x+6=0 أو {y=2*x+3; y=-x+1}');
+        }
+      }
+
+      return {steps, draw};
+    }
+
+    /* ===== أحداث الواجهة ===== */
+    const inp = document.getElementById('eq');
+    document.getElementById('solve').addEventListener('click', ()=>{
+      clearStatus();
+      const expr = inp.value.trim();
+      if (!expr){ setStatus('اكتب معادلة أول', false); return; }
+      try{
+        const res = solveSimple(expr);
+        renderSteps(res.steps);
+        if (res.draw){
+          if (res.draw.kind==='line') plotLine(res.draw.rhs.replace(/\*\*/g,'^'));
+          if (res.draw.kind==='quad') plotQuadratic(res.draw.poly.replace(/\*\*/g,'^'));
+          if (res.draw.kind==='sys')  plotSystem(res.draw.e1.replace(/\*\*/g,'^'), res.draw.e2.replace(/\*\*/g,'^'));
+          setStatus('✔ تم الحل والرسم');
+        }else{
+          setStatus('ما قدر يرسم—عدّل الصيغة', false);
+          plotWelcome();
+        }
+      }catch(err){
+        console.error(err);
+        setStatus('خطأ أثناء التحليل/الرسم', false);
+        plotWelcome();
+      }
+    });
+
+    document.getElementById('clear').addEventListener('click', ()=>{
+      inp.value = '';
+      renderSteps([]);
+      clearStatus();
+      plotWelcome();
+    });
+
+    // رسم مبدئي
+    plotWelcome();
+
+    // Service Worker (اختياري)
+    if ('serviceWorker' in navigator){
+      navigator.serviceWorker.register('./sw.js').catch(()=>{});
+    }
+  </script>
+</body>
+</html>
